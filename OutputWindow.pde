@@ -4,7 +4,7 @@
  * 
  * Performance: Video surfaces load their own Movie instance in this GL
  * context, eliminating the expensive GPU→CPU→GPU pixel bridge. Only
- * LiveAV/Playground still use a throttled CPU bridge.
+ * Playground still uses a throttled CPU bridge.
  */
 
 public class OutputWindow extends PApplet {
@@ -16,11 +16,18 @@ public class OutputWindow extends PApplet {
   
   public void setup() { 
     background(0);
-    initTextureSharing(this);
   }
   
   public void draw() {
     background(0);
+    
+    // Lazy-init the output-side Syphon/Spout receiver in this GL context
+    if (outputTextureReceivingNeeded && !outputTextureReceivingEnabled) {
+      initOutputTextureReceiving(this);
+    }
+    
+    // Update output-side Syphon/Spout receiver
+    updateOutputTextureReceiving(this);
     
     // Apply output mirror/flip transform
     pushMatrix();
@@ -45,14 +52,14 @@ public class OutputWindow extends PApplet {
         surfaces.get(si).ensureOutputMedia(this);
       }
       
-      // Mark bridge frames (LiveAV/Playground only) for texture re-upload
+      // Mark bridge frames (Playground) for texture re-upload
       for (int si = 0; si < surfaces.size(); si++) {
         Surface s = surfaces.get(si);
-        if ((s.isLive || s.isPlayground) && s.videoFrame != null) {
+        if (s.isPlayground && s.videoFrame != null) {
           s.videoFrame.setModified(true);
         }
         // Images: mark modified on first use so this context uploads them
-        if (!s.isVideo && !s.isLive && !s.isPlayground && s.img != null) {
+        if (!s.isVideo && !s.isPlayground && !s.isSyphonSpout && s.img != null) {
           s.img.setModified(true);
         }
       }
@@ -79,8 +86,6 @@ public class OutputWindow extends PApplet {
       }
     }
     popMatrix();
-    
-    sendTextureFrame();
   }
   
   // Called by the Video library when a frame is ready for Movies owned by this PApplet

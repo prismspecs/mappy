@@ -123,20 +123,27 @@ void fitToProjector() {
   canvasPanY = (height - output.height * canvasZoom) / 2;
 }
 
-void toggleLiveAction() {
-  if (selectedSurface != null) {
-    pushUndo();
-    synchronized(surfaces) {
-      selectedSurface.setLive(!selectedSurface.isLive);
-    }
-  }
-}
-
 void togglePlaygroundAction() {
   if (selectedSurface != null) {
     pushUndo();
     synchronized(surfaces) {
       selectedSurface.setPlayground(!selectedSurface.isPlayground);
+    }
+  }
+}
+
+void toggleSyphonSpoutAction() {
+  if (selectedSurface != null) {
+    pushUndo();
+    synchronized(surfaces) {
+      boolean enabling = !selectedSurface.isSyphonSpout;
+      selectedSurface.setSyphonSpout(enabling);
+      if (enabling) {
+        if (!textureReceivingEnabled) {
+          initTextureReceiving(mappy.this);
+        }
+        outputTextureReceivingNeeded = true; // lazy-init in output GL context
+      }
     }
   }
 }

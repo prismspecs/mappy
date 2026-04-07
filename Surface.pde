@@ -12,13 +12,13 @@ class Surface {
   
   PImage img;
   Movie video;
-  PGraphics bridgeG;  // Offscreen PGraphics for GPU->CPU pixel readback (LiveAV/Playground only)
-  PImage videoFrame;  // CPU-side bridge image (LiveAV/Playground only, not needed for video/images)
+  PGraphics bridgeG;  // Offscreen PGraphics for GPU->CPU pixel readback (Playground only)
+  PImage videoFrame;  // CPU-side bridge image (Playground only, not needed for video/images)
   String mediaPath = "";
   String pendingMediaPath = "";
   boolean isVideo = false;
-  boolean isLive = false;
   boolean isPlayground = false;
+  boolean isSyphonSpout = false;
   boolean isCircle = false;
   boolean isLocked = false;
   
@@ -63,33 +63,20 @@ class Surface {
     mediaPath = json.getString("mediaPath", "");
     if (!mediaPath.equals("")) loadMedia(parent, mediaPath);
     
-    isLive = json.getBoolean("isLive", false);
-    if (isLive) setLive(true);
-    
     isPlayground = json.getBoolean("isPlayground", false);
     if (isPlayground) setPlayground(true);
     
+    isSyphonSpout = json.getBoolean("isSyphonSpout", false);
+    if (isSyphonSpout) setSyphonSpout(true);
+    
     isCircle = json.getBoolean("isCircle", false);
     isLocked = json.getBoolean("isLocked", false);
-  }
-  
-  void setLive(boolean live) {
-    if (live && !isLive) {
-      unloadMedia();
-      isLive = true;
-      isPlayground = false;
-      liveAV.trigger(true);
-    } else if (!live && isLive) {
-      isLive = false;
-      liveAV.trigger(false);
-    }
   }
   
   void setPlayground(boolean pg) {
     if (pg && !isPlayground) {
       unloadMedia();
       isPlayground = true;
-      isLive = false;
       playground.trigger(true);
     } else if (!pg && isPlayground) {
       isPlayground = false;
@@ -97,15 +84,21 @@ class Surface {
     }
   }
   
-  void unloadMedia() {
-    if (isLive) {
-      liveAV.trigger(false);
-      isLive = false;
+  void setSyphonSpout(boolean ss) {
+    if (ss && !isSyphonSpout) {
+      unloadMedia();
+      isSyphonSpout = true;
+    } else if (!ss && isSyphonSpout) {
+      isSyphonSpout = false;
     }
+  }
+  
+  void unloadMedia() {
     if (isPlayground) {
       playground.trigger(false);
       isPlayground = false;
     }
+    isSyphonSpout = false;
     
     // Set isVideo to false FIRST to stop other threads from accessing 'video'
     isVideo = false;
@@ -156,7 +149,6 @@ class Surface {
     videoFrame = null;
 
     this.mediaPath = path;
-    this.isLive = false;
     String lowerPath = path.toLowerCase();
     if (lowerPath.endsWith(".mp4") || lowerPath.endsWith(".mov") || lowerPath.endsWith(".avi")) {
       try {
@@ -206,10 +198,10 @@ class Surface {
   }
 
   /**
-   * Process pending media loads and bridge LiveAV/Playground content.
+   * Process pending media loads and bridge Playground content.
    * Video and images no longer need the CPU bridge — the output window
    * loads its own Movie/PImage in its own GL context (see ensureOutputMedia).
-   * The bridge is only used for LiveAV and Playground (PGraphics sources).
+   * The bridge is only used for Playground (PGraphics sources).
    */
   void updateVideoBridge() {
     // 1. Process thread-safe loading on the main animation thread
@@ -219,14 +211,20 @@ class Surface {
       delay(50);
     }
     
-    // 2. Bridge only needed for LiveAV/Playground (procedural PGraphics sources)
-    if (!isLive && !isPlayground) return;
+    // 2. Bridge only needed for Playground (PGraphics sources)
+    //    Syphon/Spout uses per-context clients — no CPU bridge.
+    if (!isPlayground) return;
     
     // 3. Throttle: every other frame to save CPU
     if (frameCount % 2 != 0) return;
     
-    PGraphics sourceCanvas = isLive ? liveAV.canvas : playground.canvas;
+    PGraphics sourceCanvas = playground.canvas;
+    if (sourceCanvas == null) return;
     
+    int pw = sourceCanvas.pixelWidth;
+    int ph = sourceCanvas.pixelHeight;
+    
+    // Playground: render through bridgeG then readback
     if (bridgeG == null || bridgeG.width != sourceCanvas.width || bridgeG.height != sourceCanvas.height) {
       if (bridgeG != null) bridgeG.dispose();
       bridgeG = createGraphics(sourceCanvas.width, sourceCanvas.height, P2D);
@@ -234,10 +232,9 @@ class Surface {
     bridgeG.beginDraw();
     bridgeG.image(sourceCanvas, 0, 0);
     bridgeG.endDraw();
-
     bridgeG.loadPixels();
-    int pw = bridgeG.pixelWidth;
-    int ph = bridgeG.pixelHeight;
+    pw = bridgeG.pixelWidth;
+    ph = bridgeG.pixelHeight;
     if (videoFrame == null || videoFrame.width != pw || videoFrame.height != ph) {
       videoFrame = createImage(pw, ph, RGB);
     }
@@ -251,13 +248,14 @@ class Surface {
     if (isController) {
       // Controller uses native GL textures (same GL context) — no bridge overhead
       if (isVideo && video != null) tex = video;
-      else if (isLive) tex = liveAV.canvas;
       else if (isPlayground) tex = playground.canvas;
+      else if (isSyphonSpout) tex = syphonSpoutInput;
       else tex = img;
     } else {
-      // Output window: use its own Movie, or bridge for LiveAV/Playground
+      // Output window: use its own Movie, or output-side Syphon client, or bridge for Playground
       if (isVideo) tex = outputVideo; // Own Movie in output GL context
-      else if (isLive || isPlayground) tex = videoFrame; // CPU bridge (throttled)
+      else if (isSyphonSpout) tex = outputSyphonSpoutInput; // Own client in output GL context
+      else if (isPlayground) tex = videoFrame; // CPU bridge (throttled)
       else tex = img; // PImages work cross-context (CPU pixel data)
     }
     
@@ -438,8 +436,8 @@ class Surface {
   // Helper: get the texture reference for the controller context
   PImage getControllerTex() {
     if (isVideo && video != null) return video;
-    if (isLive) return liveAV.canvas;
     if (isPlayground) return playground.canvas;
+    if (isSyphonSpout) return syphonSpoutInput;
     return img;
   }
   
@@ -568,13 +566,11 @@ class Surface {
     println("  --- Surface[" + idx + "] ---");
     println("  mediaPath   : " + mediaPath);
     println("  isVideo     : " + isVideo);
-    println("  isLive      : " + isLive);
     println("  isPlayground: " + isPlayground);
+    println("  isSyphonSpout: " + isSyphonSpout);
     println("  isCircle    : " + isCircle);
     if (isPlayground) {
       println("  pg canvas   : " + playground.canvas.width + " x " + playground.canvas.height);
-    } else if (isLive) {
-      println("  live canvas : " + liveAV.canvas.width + " x " + liveAV.canvas.height);
     } else if (isVideo) {
       if (video == null) {
         println("  video       : NULL");
@@ -603,8 +599,8 @@ class Surface {
     for (int i = 0; i < 4; i++) { JSONObject cp = new JSONObject(); cp.setFloat("x", sourceCorners[i].x); cp.setFloat("y", sourceCorners[i].y); jsonSrc.setJSONObject(i, cp); }
     json.setJSONArray("sourceCorners", jsonSrc);
     json.setString("mediaPath", mediaPath);
-    json.setBoolean("isLive", isLive);
     json.setBoolean("isPlayground", isPlayground);
+    json.setBoolean("isSyphonSpout", isSyphonSpout);
     json.setBoolean("isCircle", isCircle);
     json.setBoolean("isLocked", isLocked);
     return json;

@@ -103,9 +103,9 @@ void drawSidebar() {
   btnY += btnH + spacing;
   drawButton(UI_MARGIN, btnY, btnW, btnH, "Source View (V)", showSourceView);
   btnY += btnH + spacing;
-  drawButton(UI_MARGIN, btnY, btnW, btnH, "Live AV (K)", selectedSurface != null && selectedSurface.isLive);
-  btnY += btnH + spacing;
   drawButton(UI_MARGIN, btnY, btnW, btnH, "Playground (P)", selectedSurface != null && selectedSurface.isPlayground);
+  btnY += btnH + spacing;
+  drawButton(UI_MARGIN, btnY, btnW, btnH, "Syphon/Spout (T)", selectedSurface != null && selectedSurface.isSyphonSpout);
   btnY += btnH + spacing;
   drawButton(UI_MARGIN, btnY, btnW, btnH, "Delete Quad (D)", false);
   btnY += btnH + spacing;
@@ -152,7 +152,7 @@ void drawSidebar() {
     fill(200);
     String path = selectedSurface.mediaPath;
     if (selectedSurface.isPlayground) path = "Playground";
-    else if (selectedSurface.isLive) path = "Live AV";
+    else if (selectedSurface.isSyphonSpout) path = "Syphon/Spout Input";
     else if (path.equals("")) path = "No media";
     else {
       File f = new File(path);

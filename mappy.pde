@@ -5,12 +5,10 @@
 
 import processing.video.*;
 import processing.serial.*;
-import processing.sound.*;
 
 // Global State
 ArrayList<Surface> surfaces;
 Surface selectedSurface = null;
-LiveAV liveAV;
 Playground playground;
 
 // Undo System
@@ -87,16 +85,22 @@ void setup() {
   
   surfaces = new ArrayList<Surface>();
   
-  // Initialize Live AV Manager
-  liveAV = new LiveAV(this);
-  
   // Initialize Playground
-  playground = new Playground();
+  playground = new Playground(this);
   
   // Load previous configuration
   loadConfig();
   if (surfaces.isEmpty()) {
     surfaces.add(new Surface(this));
+  }
+  
+  // Start Syphon/Spout receiver if any surface needs it
+  for (Surface s : surfaces) {
+    if (s.isSyphonSpout) {
+      initTextureReceiving(this);
+      outputTextureReceivingNeeded = true; // lazy-init in output GL context
+      break;
+    }
   }
   
   // Generate guide stripe textures and grid background
@@ -117,9 +121,11 @@ void draw() {
     hasAutoFit = true;
   }
   
-  // 0b. Update Live AV and Playground
-  liveAV.update();
+  // 0b. Update Playground
   playground.update();
+  
+  // 0c. Update Syphon/Spout input
+  updateTextureReceiving(this);
   
   synchronized(surfaces) {
     // 1. Sync video bridge frames (movieEvent fires read(); here we copy pixels to PImage)
