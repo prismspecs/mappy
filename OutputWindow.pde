@@ -15,7 +15,8 @@ public class OutputWindow extends PApplet {
   }
   
   public void setup() { 
-    background(0); 
+    background(0);
+    initTextureSharing(this);
   }
   
   public void draw() {
@@ -78,6 +79,8 @@ public class OutputWindow extends PApplet {
       }
     }
     popMatrix();
+    
+    sendTextureFrame();
   }
   
   // Called by the Video library when a frame is ready for Movies owned by this PApplet

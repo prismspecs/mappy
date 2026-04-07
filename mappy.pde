@@ -236,4 +236,9 @@ void movieEvent(Movie m) {
   }
 }
 
+void exit() {
+  stopTextureSharing();
+  super.exit();
+}
+
 
