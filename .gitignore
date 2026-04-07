@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Config (contains local paths)
+data/config.json
+
+# Processing exported applications
+macos-aarch64/
+macos-aarch64.zip
+macos-x86_64/
+macos-x86_64.zip
+linux-amd64/
+linux-amd64.zip
+linux-arm/
+linux-arm.zip
+windows-amd64/
+windows-amd64.zip
