@@ -33,19 +33,7 @@ void drawMainWorkspace() {
       rect(mappingAreaX + viewW, 0, viewW, height);
     }
     
-    clip(mappingAreaX + viewW, 0, viewW, height);
-    pushMatrix();
-    translate(mappingAreaX + viewW + canvasPanX, canvasPanY);
-    scale(canvasZoom);
-    drawProjectorFrame();
-    for (int si = 0; si < surfaces.size(); si++) {
-      guideIndex = si;
-      surfaces.get(si).display(this, true, 0, viewW, false);
-      if (showMappingGuide) drawLayerNumber(surfaces.get(si), si);
-      if (surfaces.get(si).isLocked) drawLockIndicator(surfaces.get(si));
-    }
-    popMatrix();
-    noClip();
+    renderMappingView(mappingAreaX + viewW, 0, viewW, height);
     
     fill(255, 100);
     textAlign(CENTER, TOP);
@@ -59,24 +47,28 @@ void drawMainWorkspace() {
       drawGuideBackground(mappingAreaX, 0, mappingAreaW, height);
     }
     
-    clip(mappingAreaX, 0, mappingAreaW, height);
-    pushMatrix();
-    translate(mappingAreaX + canvasPanX, canvasPanY);
-    scale(canvasZoom);
-    drawProjectorFrame();
-    for (int si = 0; si < surfaces.size(); si++) {
-      guideIndex = si;
-      surfaces.get(si).display(this, true, 0, mappingAreaW, false);
-      if (showMappingGuide) drawLayerNumber(surfaces.get(si), si);
-      if (surfaces.get(si).isLocked) drawLockIndicator(surfaces.get(si));
-    }
-    popMatrix();
-    noClip();
+    renderMappingView(mappingAreaX, 0, mappingAreaW, height);
     
     fill(255, 100);
     textAlign(CENTER, TOP);
     text("MAPPING VIEW", mappingAreaX + mappingAreaW/2, 10);
   }
+}
+
+void renderMappingView(int x, int y, int w, int h) {
+  clip(x, y, w, h);
+  pushMatrix();
+  translate(x + canvasPanX, y + canvasPanY);
+  scale(canvasZoom);
+  drawProjectorFrame();
+  for (int si = 0; si < surfaces.size(); si++) {
+    guideIndex = si;
+    surfaces.get(si).display(this, true, 0, w, false);
+    if (showMappingGuide) drawLayerNumber(surfaces.get(si), si);
+    if (surfaces.get(si).isLocked) drawLockIndicator(surfaces.get(si));
+  }
+  popMatrix();
+  noClip();
 }
 
 void drawSidebar() {
@@ -258,4 +250,56 @@ void drawLockIndicator(Surface s) {
   fill(255);
   textAlign(CENTER, CENTER);
   text(icon, cx, cy - 1 / canvasZoom);
+}
+
+// --- Guide Generation Helpers ---
+
+PImage[] createGuideTextures() {
+  int[][] cols = {
+    {255, 60, 60},   // 0 red
+    {60, 220, 220},  // 1 cyan
+    {60, 220, 60},   // 2 green
+    {255, 200, 40},  // 3 yellow
+    {200, 60, 255},  // 4 purple
+    {255, 130, 40},  // 5 orange
+    {60, 120, 255},  // 6 blue
+    {255, 60, 180},  // 7 pink
+    {120, 255, 60},  // 8 lime
+    {180, 130, 255}  // 9 lavender
+  };
+  PImage[] tex = new PImage[cols.length];
+  int sz = 128;
+  int sw = 8;
+  for (int t = 0; t < cols.length; t++) {
+    PImage img = createImage(sz, sz, RGB);
+    img.loadPixels();
+    int r = cols[t][0], g = cols[t][1], b = cols[t][2];
+    for (int y = 0; y < sz; y++) {
+      for (int x = 0; x < sz; x++) {
+        if (((x + y) / sw) % 2 == 0) img.pixels[y * sz + x] = color(r, g, b);
+        else img.pixels[y * sz + x] = color(r/4, g/4, b/4);
+      }
+    }
+    img.updatePixels();
+    tex[t] = img;
+  }
+  return tex;
+}
+
+PImage createGuideGrid() {
+  int sz = 256;
+  int gridSpacing = 32;
+  PImage img = createImage(sz, sz, RGB);
+  img.loadPixels();
+  for (int y = 0; y < sz; y++) {
+    for (int x = 0; x < sz; x++) {
+      if (x % gridSpacing == 0 || y % gridSpacing == 0) {
+        img.pixels[y * sz + x] = color(120);
+      } else {
+        img.pixels[y * sz + x] = color(30);
+      }
+    }
+  }
+  img.updatePixels();
+  return img;
 }

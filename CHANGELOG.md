@@ -1,5 +1,29 @@
 # Mappy Changelog (LLM Context)
 
+- **Unified Bridge Architecture**: 
+    - **Video & Syphon**: Bridge from Output -> Controller (downsampled for performance).
+    - **Playground**: Bridge from Controller -> Output (full resolution). This is because Playground is an interactive sketch running in the controller context.
+- **Retina Pixel Sync**: Fixed a CPU-bridge bug where Retina `pixelWidth` (2x logical) caused array overflows during pixel copies.
+
+## Video Sync & Looping Improvements (Apr 2026)
+- **Master Video Architecture**: Unified playback into a single master `outputVideo` instance per surface.
+- **Perfect Synchronization**: Replaced the separate controller-side movie with a CPU-bridged preview frame. The controller now shows exactly what is on the projector, frame-for-frame.
+- **Resource Optimization**: Halved the CPU and Disk I/O overhead by eliminating redundant video decoders.
+- **Robust Looping**: Added a manual duration-check and `jump(0)` call to bypass GStreamer's occasional failure to restart loops at the boundary.
+
+## Video Stability Improvements (Apr 2026)
+- Replaced background-threaded `movieEvent` with manual `available()`/`read()` calls in the main animation thread.
+- This resolves frequent "hanging" and deadlocks caused by GStreamer thread contention, especially on macOS.
+- Added robust error handling around video frame reading to prevent crashes on malformed frames.
+- Unified video update logic within `updateVideoBridge` (controller) and `ensureOutputMedia` (projector).
+
+## Code Cleanup & Reorganization (Apr 2026)
+- Consolidated Mapping View rendering logic in `Interface.pde` to eliminate duplication.
+- Reorganized global state in `mappy.pde` into logical sections.
+- Moved guide texture/grid generation helpers from `mappy.pde` to `Interface.pde`.
+- Corrected comments in `Surface.pde` regarding the new Syphon CPU-bridge architecture.
+- Removed redundant `.autosave` files.
+
 ## Syphon/Spout Input (Apr 2026)
 - Mappy is INPUT only (receives textures from other apps). No Syphon/Spout output/server.
 - Two SyphonClients: one per GL context (controller + output window). Each must be created in its own context's thread.

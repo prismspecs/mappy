@@ -87,9 +87,4 @@ public class OutputWindow extends PApplet {
     }
     popMatrix();
   }
-  
-  // Called by the Video library when a frame is ready for Movies owned by this PApplet
-  public void movieEvent(Movie m) {
-    try { m.read(); } catch (Exception e) {}
-  }
 }

@@ -11,9 +11,7 @@ class Surface {
   boolean isSelected = false;
   
   PImage img;
-  Movie video;
-  PGraphics bridgeG;  // Offscreen PGraphics for GPU->CPU pixel readback (Playground only)
-  PImage videoFrame;  // CPU-side bridge image (Playground only, not needed for video/images)
+  PImage videoFrame;  // CPU-side bridge image for controller preview
   String mediaPath = "";
   String pendingMediaPath = "";
   boolean isVideo = false;
@@ -22,12 +20,14 @@ class Surface {
   boolean isCircle = false;
   boolean isLocked = false;
   
-  // Output window's own resources (avoids expensive CPU pixel bridge)
+  // Single master Movie instance, lives in output window's GL context
   Movie outputVideo;
+  PGraphics outputBridgeG; // Downsampled preview generator (output context)
   boolean outputNeedsLoad = false;
   
   int gridRes = 20;
   int circleSegments = 36;
+  int maxPreviewDim = 640; // Max dimension for controller preview to save CPU
   
   Surface(PApplet parent) {
     corners = new PVector[4];
@@ -100,18 +100,8 @@ class Surface {
     }
     isSyphonSpout = false;
     
-    // Set isVideo to false FIRST to stop other threads from accessing 'video'
+    // Stop master video
     isVideo = false;
-    
-    if (video != null) {
-      try {
-        video.stop();
-        delay(20);
-        video.dispose();
-      } catch (Exception e) {}
-      video = null;
-    }
-    
     if (outputVideo != null) {
       try {
         outputVideo.stop();
@@ -120,12 +110,12 @@ class Surface {
       } catch (Exception e) {}
       outputVideo = null;
     }
+    if (outputBridgeG != null) {
+      outputBridgeG.dispose();
+      outputBridgeG = null;
+    }
     outputNeedsLoad = false;
     
-    if (bridgeG != null) {
-      bridgeG.dispose();
-      bridgeG = null;
-    }
     videoFrame = null;
     img = null;
     mediaPath = "";
@@ -136,32 +126,11 @@ class Surface {
   }
 
   private void performLoadMedia(PApplet parent, String path) {
-    // Stop and release any previously loaded video before replacing it
-    if (video != null) {
-      video.stop();
-      video.dispose();
-      video = null;
-    }
-    if (bridgeG != null) {
-      bridgeG.dispose();
-      bridgeG = null;
-    }
-    videoFrame = null;
-
     this.mediaPath = path;
     String lowerPath = path.toLowerCase();
     if (lowerPath.endsWith(".mp4") || lowerPath.endsWith(".mov") || lowerPath.endsWith(".avi")) {
-      try {
-        println("[DEBUG] [Surface] GStreamer Load Start: " + path);
-        video = new Movie(parent, path);
-        println("[DEBUG] [Surface] GStreamer Load Success: " + path);
-        video.loop();
-        video.volume(0);  // Mute controller copy — output window plays audio
-        isVideo = true;
-        img = null;
-      } catch (Exception e) {
-        println("Error loading video: " + e.getMessage());
-      }
+      isVideo = true;
+      img = null;
     } else {
       img = parent.loadImage(path);
       isVideo = false;
@@ -170,10 +139,26 @@ class Surface {
   }
   
   /**
-   * Load media in the output window's GL context.
-   * Called from OutputWindow.draw() so textures are native — no CPU bridge needed.
+   * Load and update media in the output window's GL context.
    */
   void ensureOutputMedia(PApplet outputApp) {
+    // 1. Handle playback, robust looping, and preview generation for master video
+    if (isVideo && outputVideo != null) {
+      if (outputVideo.available()) {
+        try {
+          outputVideo.read();
+        } catch (Exception e) {}
+      }
+      // Robust loop: if we're near the end, jump back to 0
+      if (outputVideo.duration() > 0.1 && outputVideo.time() >= outputVideo.duration() - 0.1) {
+        outputVideo.jump(0);
+        outputVideo.play();
+      }
+      
+      // Generate downsampled preview if needed
+      generatePreview(outputApp, outputVideo);
+    }
+
     if (!outputNeedsLoad) return;
     outputNeedsLoad = false;
     
@@ -189,19 +174,50 @@ class Surface {
       try {
         outputVideo = new Movie(outputApp, mediaPath);
         outputVideo.loop();
-        println("[OutputWindow] Video loaded: " + mediaPath);
+        println("[OutputWindow] Master video loaded: " + mediaPath);
       } catch (Exception e) {
         println("[OutputWindow] Error loading video: " + e.getMessage());
       }
     }
-    // Images (img) work cross-context via CPU pixels — no output copy needed
   }
 
   /**
-   * Process pending media loads and bridge Playground content.
-   * Video and images no longer need the CPU bridge — the output window
-   * loads its own Movie/PImage in its own GL context (see ensureOutputMedia).
-   * The bridge is only used for Playground (PGraphics sources).
+   * Generates a downsampled PGraphics for the controller preview.
+   * Runs in the context of the applet that owns the texture (usually output window).
+   */
+  void generatePreview(PApplet ctx, PImage source) {
+    if (source == null || source.width <= 0 || source.height <= 0) return;
+    
+    // Calculate downsampled dimensions
+    int pw = source.width;
+    int ph = source.height;
+    if (pw > maxPreviewDim || ph > maxPreviewDim) {
+      float aspect = (float)pw / ph;
+      if (pw > ph) {
+        pw = maxPreviewDim;
+        ph = (int)(maxPreviewDim / aspect);
+      } else {
+        ph = maxPreviewDim;
+        pw = (int)(maxPreviewDim * aspect);
+      }
+    }
+    
+    if (outputBridgeG == null || outputBridgeG.width != pw || outputBridgeG.height != ph) {
+      if (outputBridgeG != null) outputBridgeG.dispose();
+      outputBridgeG = ctx.createGraphics(pw, ph, P2D);
+    }
+    
+    outputBridgeG.beginDraw();
+    outputBridgeG.image(source, 0, 0, pw, ph);
+    outputBridgeG.endDraw();
+    outputBridgeG.loadPixels(); // Ready for CPU bridge
+  }
+
+  /**
+   * Bridge content between contexts.
+   * - Videos: Bridge from Output Window -> Controller (downsampled preview)
+   * - Playground: Bridge from Controller -> Output Window (full pixels)
+   * - Syphon: Bridge from Output Window -> Controller (CPU readback)
    */
   void updateVideoBridge() {
     // 1. Process thread-safe loading on the main animation thread
@@ -211,52 +227,71 @@ class Surface {
       delay(50);
     }
     
-    // 2. Bridge only needed for Playground (PGraphics sources)
-    //    Syphon/Spout uses per-context clients — no CPU bridge.
-    if (!isPlayground) return;
+    // 2. Bridge check
+    if (!isVideo && !isPlayground && !isSyphonSpout) return;
     
-    // 3. Throttle: every other frame to save CPU
+    // 3. Throttle bridge updates to save CPU (every other frame)
     if (frameCount % 2 != 0) return;
     
-    PGraphics sourceCanvas = playground.canvas;
-    if (sourceCanvas == null) return;
-    
-    int pw = sourceCanvas.pixelWidth;
-    int ph = sourceCanvas.pixelHeight;
-    
-    // Playground: render through bridgeG then readback
-    if (bridgeG == null || bridgeG.width != sourceCanvas.width || bridgeG.height != sourceCanvas.height) {
-      if (bridgeG != null) bridgeG.dispose();
-      bridgeG = createGraphics(sourceCanvas.width, sourceCanvas.height, P2D);
+    if (isVideo) {
+      // BRIDGE: Output -> Controller
+      // Copy downsampled pixels from outputBridgeG (populated in output context)
+      if (outputBridgeG == null || outputBridgeG.pixels == null || outputBridgeG.pixels.length == 0) return;
+      syncVideoFrame(outputBridgeG);
+    } 
+    else if (isPlayground) {
+      // BRIDGE: Controller -> Output
+      // The Playground lives in THIS context. We bridge it to videoFrame
+      // so the Output window can display it.
+      if (playground.canvas == null) return;
+      syncVideoFrame(playground.canvas);
+    } 
+    else if (isSyphonSpout) {
+      // Syphon already bridged to syphonSpoutInput by TextureSharing update
+      videoFrame = syphonSpoutInput; 
     }
-    bridgeG.beginDraw();
-    bridgeG.image(sourceCanvas, 0, 0);
-    bridgeG.endDraw();
-    bridgeG.loadPixels();
-    pw = bridgeG.pixelWidth;
-    ph = bridgeG.pixelHeight;
+  }
+
+  /**
+   * Helper to sync pixels from a source PImage/PGraphics to the videoFrame bridge.
+   */
+  private void syncVideoFrame(PImage source) {
+    if (source.width <= 0 || source.height <= 0) return;
+    
+    // Use physical pixel dimensions for the bridge to avoid array size mismatch on Retina
+    int pw = source.width;
+    int ph = source.height;
+    if (source instanceof PGraphics) {
+      pw = ((PGraphics)source).pixelWidth;
+      ph = ((PGraphics)source).pixelHeight;
+    }
+    
     if (videoFrame == null || videoFrame.width != pw || videoFrame.height != ph) {
       videoFrame = createImage(pw, ph, RGB);
     }
-    videoFrame.loadPixels();
-    System.arraycopy(bridgeG.pixels, 0, videoFrame.pixels, 0, bridgeG.pixels.length);
-    videoFrame.updatePixels();
+    
+    source.loadPixels();
+    if (source.pixels != null && source.pixels.length > 0) {
+      videoFrame.loadPixels();
+      // Ensure we don't overflow if dimensions changed mid-frame
+      int len = Math.min(source.pixels.length, videoFrame.pixels.length);
+      System.arraycopy(source.pixels, 0, videoFrame.pixels, 0, len);
+      videoFrame.updatePixels();
+    }
   }
 
   void display(PApplet p, boolean isController, int xOffset, int viewWidth, boolean isSourceView) {
     PImage tex;
     if (isController) {
-      // Controller uses native GL textures (same GL context) — no bridge overhead
-      if (isVideo && video != null) tex = video;
-      else if (isPlayground) tex = playground.canvas;
-      else if (isSyphonSpout) tex = syphonSpoutInput;
+      // Controller uses CPU-bridged preview frames for Sync
+      if (isVideo || isPlayground || isSyphonSpout) tex = videoFrame;
       else tex = img;
     } else {
-      // Output window: use its own Movie, or output-side Syphon client, or bridge for Playground
-      if (isVideo) tex = outputVideo; // Own Movie in output GL context
-      else if (isSyphonSpout) tex = outputSyphonSpoutInput; // Own client in output GL context
-      else if (isPlayground) tex = videoFrame; // CPU bridge (throttled)
-      else tex = img; // PImages work cross-context (CPU pixel data)
+      // Output window: use the native Master source (no bridge overhead)
+      if (isVideo) tex = outputVideo; 
+      else if (isSyphonSpout) tex = outputSyphonSpoutInput; 
+      else if (isPlayground) tex = videoFrame; // Playground still bridges to output
+      else tex = img; 
     }
     
     p.pushMatrix();
@@ -437,9 +472,7 @@ class Surface {
   
   // Helper: get the texture reference for the controller context
   PImage getControllerTex() {
-    if (isVideo && video != null) return video;
-    if (isPlayground) return playground.canvas;
-    if (isSyphonSpout) return syphonSpoutInput;
+    if (isVideo || isPlayground || isSyphonSpout) return videoFrame;
     return img;
   }
   
@@ -574,18 +607,17 @@ class Surface {
     if (isPlayground) {
       println("  pg canvas   : " + playground.canvas.width + " x " + playground.canvas.height);
     } else if (isVideo) {
-      if (video == null) {
-        println("  video       : NULL");
+      if (outputVideo == null) {
+        println("  outputVideo : NULL");
       } else {
-        println("  video dims  : " + video.width + " x " + video.height);
-        println("  video time  : " + video.time());
+        println("  video dims  : " + outputVideo.width + " x " + outputVideo.height);
+        println("  video time  : " + outputVideo.time());
       }
-      println("  outputVideo : " + (outputVideo == null ? "NULL" : outputVideo.width + " x " + outputVideo.height));
     } else {
       println("  img         : " + (img == null ? "NULL" : img.width + " x " + img.height));
     }
-    if (bridgeG != null) {
-      println("  bridgeG     : " + bridgeG.width + "x" + bridgeG.height);
+    if (outputBridgeG != null) {
+      println("  outputBridgeG : " + outputBridgeG.width + "x" + outputBridgeG.height);
     }
     if (videoFrame != null) {
       println("  videoFrame  : " + videoFrame.width + "x" + videoFrame.height);

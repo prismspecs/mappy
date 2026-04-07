@@ -6,49 +6,47 @@
 import processing.video.*;
 import processing.serial.*;
 
-// Global State
+// --- Core State ---
 ArrayList<Surface> surfaces;
 Surface selectedSurface = null;
 Playground playground;
+OutputWindow output;
 
-// Undo System
+// --- Undo/Redo ---
 ArrayList<JSONArray> undoStack = new ArrayList<JSONArray>();
 int maxUndoLevels = 50;
 
-// UI/Interaction State
+// --- Interaction State ---
 boolean isMarquee = false;
 float marqueeX1, marqueeY1;
 boolean isDraggingVertex = false;
 boolean isDraggingShape = false;
 boolean isDraggingSourceVertex = false;
 boolean isDraggingSourceShape = false;
-boolean undoPushedThisDrag = false;
+boolean isPanningCanvas = false;
 boolean showSourceView = false;
+boolean undoPushedThisDrag = false;
 
-// Configuration Constants
-int SIDEBAR_WIDTH = 220;
-int UI_MARGIN = 20;
-int outputDisplay = 2; // Default to display 2 (projector)
-int outputMirror = 0; // 0=Normal, 1=Flipped H, 2=Flipped V, 3=Flipped H+V
-String[] mirrorLabels = {"Normal", "Mirror H", "Mirror V", "Mirror H+V"};
-
-// Canvas Zoom/Pan (Controller mapping view only)
+// --- Viewport State (Controller only) ---
 float canvasZoom = 1.0;
 float canvasPanX = 0;
 float canvasPanY = 0;
-boolean isPanningCanvas = false;
-boolean hasAutoFit = false; // Whether we've done the initial fit-to-projector
+boolean hasAutoFit = false;
 
-// Mapping Guide
+// --- Display Configuration ---
+int SIDEBAR_WIDTH = 220;
+int UI_MARGIN = 20;
+int outputDisplay = 2; // Default to display 2 (projector)
+int outputMirror = 0; // 0=Normal, 1=H, 2=V, 3=H+V
+String[] mirrorLabels = {"Normal", "Mirror H", "Mirror V", "Mirror H+V"};
+
+// --- Mapping Guides ---
 boolean showMappingGuide = false;
 PImage[] guideTextures;
 PImage guideGridBg;
 int guideIndex = 0;
 
-// Secondary Window
-OutputWindow output;
-
-// Diagnostics
+// --- Debug/Diagnostics ---
 int diagMovieEventCount = 0;
 
 void settings() {
@@ -124,7 +122,7 @@ void draw() {
   playground.update();
   
   synchronized(surfaces) {
-    // 1. Sync video bridge frames (movieEvent fires read(); here we copy pixels to PImage)
+    // 1. Sync video/playground/syphon bridge frames
     for (Surface s : surfaces) {
       s.updateVideoBridge();
     }
@@ -167,80 +165,7 @@ void mouseWheel(MouseEvent event) {
   canvasPanY = my - (my - canvasPanY) * (canvasZoom / oldZoom);
 }
 
-PImage[] createGuideTextures() {
-  int[][] cols = {
-    {255, 60, 60},   // 0 red
-    {60, 220, 220},  // 1 cyan
-    {60, 220, 60},   // 2 green
-    {255, 200, 40},  // 3 yellow
-    {200, 60, 255},  // 4 purple
-    {255, 130, 40},  // 5 orange
-    {60, 120, 255},  // 6 blue
-    {255, 60, 180},  // 7 pink
-    {120, 255, 60},  // 8 lime
-    {180, 130, 255}  // 9 lavender
-  };
-  PImage[] tex = new PImage[cols.length];
-  int sz = 128;
-  int sw = 8;
-  for (int t = 0; t < cols.length; t++) {
-    PImage img = createImage(sz, sz, RGB);
-    img.loadPixels();
-    int r = cols[t][0], g = cols[t][1], b = cols[t][2];
-    for (int y = 0; y < sz; y++) {
-      for (int x = 0; x < sz; x++) {
-        if (((x + y) / sw) % 2 == 0) img.pixels[y * sz + x] = color(r, g, b);
-        else img.pixels[y * sz + x] = color(r/4, g/4, b/4);
-      }
-    }
-    img.updatePixels();
-    tex[t] = img;
-  }
-  return tex;
-}
-
-PImage createGuideGrid() {
-  int sz = 256;
-  int gridSpacing = 32;
-  PImage img = createImage(sz, sz, RGB);
-  img.loadPixels();
-  for (int y = 0; y < sz; y++) {
-    for (int x = 0; x < sz; x++) {
-      if (x % gridSpacing == 0 || y % gridSpacing == 0) {
-        img.pixels[y * sz + x] = color(120);
-      } else {
-        img.pixels[y * sz + x] = color(30);
-      }
-    }
-  }
-  img.updatePixels();
-  return img;
-}
-
-// Called by the video library on a background thread when a new frame is ready.
-void movieEvent(Movie m) {
-  try {
-    m.read();
-  } catch (Exception e) {
-    // Suppress Texture.copyBufferFromSource NPE race on Mac
-    return;
-  }
-  diagMovieEventCount++;
-  if (diagMovieEventCount <= 5) {
-    // Check pixels RIGHT here, before any loadPixels() call.
-    // If these are non-zero, video.loadPixels() in updateVideoBridge is the bug.
-    // If these are zero, the library is using a GL texture path and pixels[] is never populated.
-    String p0 = (m.pixels != null && m.pixels.length > 0) ? hex(m.pixels[0]) : "null";
-    String pm = (m.pixels != null && m.pixels.length > 1) ? hex(m.pixels[m.pixels.length/2]) : "null";
-    println("[DIAG] movieEvent #" + diagMovieEventCount
-      + "  w=" + m.width + "  h=" + m.height
-      + "  pixel[0]=" + p0 + "  pixel[mid]=" + pm);
-  }
-}
-
 void exit() {
   stopTextureSharing();
   super.exit();
 }
-
-
