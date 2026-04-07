@@ -139,10 +139,7 @@ void toggleSyphonSpoutAction() {
       boolean enabling = !selectedSurface.isSyphonSpout;
       selectedSurface.setSyphonSpout(enabling);
       if (enabling) {
-        if (!textureReceivingEnabled) {
-          initTextureReceiving(mappy.this);
-        }
-        outputTextureReceivingNeeded = true; // lazy-init in output GL context
+        textureReceivingNeeded = true; // lazy-init in output window GL context
       }
     }
   }

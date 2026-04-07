@@ -97,8 +97,7 @@ void setup() {
   // Start Syphon/Spout receiver if any surface needs it
   for (Surface s : surfaces) {
     if (s.isSyphonSpout) {
-      initTextureReceiving(this);
-      outputTextureReceivingNeeded = true; // lazy-init in output GL context
+      textureReceivingNeeded = true; // lazy-init in output window GL context
       break;
     }
   }
@@ -123,9 +122,6 @@ void draw() {
   
   // 0b. Update Playground
   playground.update();
-  
-  // 0c. Update Syphon/Spout input
-  updateTextureReceiving(this);
   
   synchronized(surfaces) {
     // 1. Sync video bridge frames (movieEvent fires read(); here we copy pixels to PImage)

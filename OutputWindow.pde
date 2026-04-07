@@ -21,13 +21,13 @@ public class OutputWindow extends PApplet {
   public void draw() {
     background(0);
     
-    // Lazy-init the output-side Syphon/Spout receiver in this GL context
-    if (outputTextureReceivingNeeded && !outputTextureReceivingEnabled) {
-      initOutputTextureReceiving(this);
+    // Lazy-init the Syphon/Spout receiver in this GL context (1x density)
+    if (textureReceivingNeeded && !textureReceivingEnabled) {
+      initTextureReceiving(this);
     }
     
-    // Update output-side Syphon/Spout receiver
-    updateOutputTextureReceiving(this);
+    // Update Syphon/Spout receiver (produces both output PGraphics + controller PImage)
+    updateTextureReceiving(this);
     
     // Apply output mirror/flip transform
     pushMatrix();

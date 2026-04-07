@@ -336,6 +336,7 @@ class Surface {
           PVector t2 = getBilinearPoint(u2, v1, activeSrc);
           PVector t3 = getBilinearPoint(u2, v2, activeSrc);
           PVector t4 = getBilinearPoint(u1, v2, activeSrc);
+
           p.vertex(p1.x, p1.y, t1.x, t1.y);
           p.vertex(p2.x, p2.y, t2.x, t2.y);
           p.vertex(p3.x, p3.y, t3.x, t3.y);
@@ -390,6 +391,7 @@ class Surface {
           PVector pos2 = getBilinearPoint(u2, v2, corners);
           PVector tex1 = getBilinearPoint(u1, v1, activeSrc);
           PVector tex2 = getBilinearPoint(u2, v2, activeSrc);
+
           p.vertex(pos1.x, pos1.y, tex1.x, tex1.y);
           p.vertex(pos2.x, pos2.y, tex2.x, tex2.y);
         }

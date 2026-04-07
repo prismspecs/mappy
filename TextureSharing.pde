@@ -3,32 +3,27 @@
  * Platform-safe Syphon (macOS) / Spout (Windows) texture INPUT via reflection.
  * If the required library is not installed, texture receiving is silently disabled.
  *
- * Processing only adds library jars to the classpath when it sees an `import`.
- * Since we intentionally avoid imports (so this compiles on all platforms),
- * we locate the jars at runtime from Processing's libraries folder and load
- * them via URLClassLoader.
+ * Architecture: ONE SyphonClient lives in the output window (1x density projector)
+ * where getGraphics() works correctly. The result is CPU-bridged back to the
+ * controller for preview. Syphon's getGraphics() is broken on Retina (2x) —
+ * it always fills only 1/4 of the FBO — so we avoid creating clients in the
+ * controller context entirely.
  */
 
 // --- Shared classloader for the texture sharing library ---
 ClassLoader texShareClassLoader = null;
 
-// --- Input (Client) – Controller side ---
+// --- Single client, lives in output window GL context ---
 Object textureReceiver = null;
-java.lang.reflect.Method textureReceiveMethod = null;
 java.lang.reflect.Method textureNewFrameMethod = null;
+java.lang.reflect.Method textureReceiveMethod = null;  // getGraphics(PGraphics)
 java.lang.reflect.Method textureReceiverStopMethod = null;
-PGraphics syphonSpoutCanvas = null;  // raw Syphon PGraphics (GL_TEXTURE_RECTANGLE)
-PGraphics syphonBlitBuffer = null;   // density-compensated blit buffer for controller
-PImage syphonSpoutInput = null;
+PGraphics syphonSpoutCanvas = null;   // raw Syphon PGraphics in output GL context
+PImage syphonSpoutInput = null;       // CPU-bridged PImage for controller display
+PImage outputSyphonSpoutInput = null; // alias to syphonSpoutCanvas for output display
 boolean textureReceivingEnabled = false;
-
-// --- Input (Client) – Output window side ---
-Object outputTextureReceiver = null;
-PGraphics outputSyphonSpoutCanvas = null;  // raw Syphon PGraphics
-PGraphics outputSyphonBlitBuffer = null;   // regular PGraphics for use as texture
-PImage outputSyphonSpoutInput = null;
-boolean outputTextureReceivingEnabled = false;
-boolean outputTextureReceivingNeeded = false; // flag for lazy init in output GL context
+boolean textureReceivingNeeded = false; // flag for lazy init in output GL context
+int texReceiveDebugCount = 0;
 
 /**
  * Locate the Processing libraries folder and load the Syphon or Spout jar.
@@ -119,23 +114,29 @@ ClassLoader findLibraryClassLoader(String libraryName) {
  * Call on exit to cleanly shut down all receivers.
  */
 void stopTextureSharing() {
-  if (textureReceiver == null && outputTextureReceiver == null) return;
-  stopTextureReceiving();
-  stopOutputTextureReceiving();
+  if (textureReceiver == null) return;
+  try {
+    if (textureReceiverStopMethod != null) textureReceiverStopMethod.invoke(textureReceiver);
+  } catch (Exception e) {}
+  textureReceiver = null;
+  textureReceivingEnabled = false;
+  syphonSpoutInput = null;
+  syphonSpoutCanvas = null;
+  outputSyphonSpoutInput = null;
   println("Texture sharing stopped.");
 }
 
 // =====================================================
-//  Texture Input (Syphon Client / Spout Receiver)
+//  Texture Input — single client in output window
 // =====================================================
 
 /**
- * Initialize a Syphon Client or Spout Receiver to receive frames from
- * another application. Call from the main sketch (controller) context.
+ * Initialize the Syphon/Spout receiver in the output window's GL context.
+ * MUST be called from OutputWindow.draw() (its thread owns the GL context).
+ * On 1x density projector, getGraphics() works correctly.
  */
-void initTextureReceiving(PApplet parent) {
-  // Stop any existing receiver
-  stopTextureReceiving();
+void initTextureReceiving(PApplet outputApplet) {
+  stopTextureSharing();
 
   String os = System.getProperty("os.name").toLowerCase();
   try {
@@ -143,22 +144,24 @@ void initTextureReceiving(PApplet parent) {
       ClassLoader cl = findLibraryClassLoader("syphon");
       if (cl == null) { println("[TextureInput] Syphon library not found."); return; }
       Class<?> cls = Class.forName("codeanticode.syphon.SyphonClient", true, cl);
-      textureReceiver = cls.getConstructor(PApplet.class).newInstance(parent);
+      textureReceiver = cls.getConstructor(PApplet.class).newInstance(outputApplet);
       textureNewFrameMethod = cls.getMethod("newFrame");
       textureReceiveMethod = cls.getMethod("getGraphics", PGraphics.class);
       textureReceiverStopMethod = cls.getMethod("stop");
       textureReceivingEnabled = true;
-      println("[TextureInput] Syphon client started");
+      textureReceivingNeeded = false;
+      println("[TextureInput] Syphon client started (output context, 1x density)");
 
     } else if (os.contains("win")) {
       ClassLoader cl = findLibraryClassLoader("spout");
       if (cl == null) { println("[TextureInput] Spout library not found."); return; }
       Class<?> cls = Class.forName("spout.Spout", true, cl);
-      textureReceiver = cls.getConstructor(PApplet.class).newInstance(parent);
+      textureReceiver = cls.getConstructor(PApplet.class).newInstance(outputApplet);
       textureReceiveMethod = cls.getMethod("receiveTexture");
       textureReceiverStopMethod = cls.getMethod("dispose");
       textureReceivingEnabled = true;
-      println("[TextureInput] Spout receiver started");
+      textureReceivingNeeded = false;
+      println("[TextureInput] Spout receiver started (output context)");
     } else {
       println("[TextureInput] No supported backend for this OS (" + os + ")");
     }
@@ -169,13 +172,12 @@ void initTextureReceiving(PApplet parent) {
 }
 
 /**
- * Call every frame to grab the latest input texture.
- * Returns the current frame as a PImage, or null if unavailable.
+ * Call every frame from OutputWindow.draw() to grab the latest frame.
+ * Updates both outputSyphonSpoutInput (PGraphics for output display)
+ * and syphonSpoutInput (CPU-bridged PImage for controller preview).
  */
-int texReceiveDebugCount = 0;
-
-PImage updateTextureReceiving(PApplet parent) {
-  if (!textureReceivingEnabled || textureReceiver == null) return syphonSpoutInput;
+void updateTextureReceiving(PApplet outputApplet) {
+  if (!textureReceivingEnabled || textureReceiver == null) return;
   try {
     String os = System.getProperty("os.name").toLowerCase();
     if (os.contains("mac")) {
@@ -183,26 +185,28 @@ PImage updateTextureReceiving(PApplet parent) {
       if (hasNew) {
         syphonSpoutCanvas = (PGraphics) textureReceiveMethod.invoke(textureReceiver, new Object[]{syphonSpoutCanvas});
         if (syphonSpoutCanvas != null) {
-          // Blit Syphon PGraphics (GL_TEXTURE_RECTANGLE) into a standard PGraphics (GL_TEXTURE_2D)
-          // using image() which handles RECT textures correctly.
-          // Do NOT call setModified() on the result — the FBO texture is already correct.
-          int srcW = syphonSpoutCanvas.width;
-          int srcH = syphonSpoutCanvas.height;
-          if (syphonBlitBuffer == null || syphonBlitBuffer.width != srcW || syphonBlitBuffer.height != srcH) {
-            if (syphonBlitBuffer != null) syphonBlitBuffer.dispose();
-            syphonBlitBuffer = createGraphics(srcW, srcH, P3D);
+          // Output display: use the PGraphics directly (same GL context, 1x density)
+          outputSyphonSpoutInput = syphonSpoutCanvas;
+
+          // Controller preview: CPU bridge (loadPixels reads the FBO via glReadPixels)
+          syphonSpoutCanvas.loadPixels();
+          if (syphonSpoutCanvas.pixels != null && syphonSpoutCanvas.pixels.length > 0) {
+            int pw = syphonSpoutCanvas.pixelWidth;
+            int ph = syphonSpoutCanvas.pixelHeight;
+            if (syphonSpoutInput == null || syphonSpoutInput.width != pw || syphonSpoutInput.height != ph) {
+              syphonSpoutInput = createImage(pw, ph, ARGB);
+            }
+            syphonSpoutInput.loadPixels();
+            System.arraycopy(syphonSpoutCanvas.pixels, 0, syphonSpoutInput.pixels, 0, syphonSpoutCanvas.pixels.length);
+            syphonSpoutInput.updatePixels();
           }
-          syphonBlitBuffer.beginDraw();
-          syphonBlitBuffer.background(0);
-          syphonBlitBuffer.image(syphonSpoutCanvas, 0, 0);
-          syphonBlitBuffer.endDraw();
-          syphonSpoutInput = syphonBlitBuffer;
+
           texReceiveDebugCount++;
           if (texReceiveDebugCount <= 5) {
-            println("[TextureInput] Got frame #" + texReceiveDebugCount +
-                    " syphon=" + srcW + "x" + srcH +
-                    " blit=" + syphonBlitBuffer.width + "x" + syphonBlitBuffer.height +
-                    " blitPx=" + syphonBlitBuffer.pixelWidth + "x" + syphonBlitBuffer.pixelHeight);
+            println("[TextureInput] Frame #" + texReceiveDebugCount +
+                    " canvas=" + syphonSpoutCanvas.width + "x" + syphonSpoutCanvas.height +
+                    " px=" + syphonSpoutCanvas.pixelWidth + "x" + syphonSpoutCanvas.pixelHeight +
+                    " img=" + (syphonSpoutInput != null ? syphonSpoutInput.width + "x" + syphonSpoutInput.height : "null"));
           }
         }
       } else if (texReceiveDebugCount == 0 && frameCount % 300 == 0) {
@@ -213,7 +217,10 @@ PImage updateTextureReceiving(PApplet parent) {
       try {
         java.lang.reflect.Method ri = textureReceiver.getClass().getMethod("receiveImage");
         PImage result = (PImage) ri.invoke(textureReceiver);
-        if (result != null && result.width > 0) syphonSpoutInput = result;
+        if (result != null && result.width > 0) {
+          syphonSpoutInput = result;
+          outputSyphonSpoutInput = result;
+        }
       } catch (Exception e2) {}
     }
   } catch (Exception e) {
@@ -222,113 +229,4 @@ PImage updateTextureReceiving(PApplet parent) {
       if (e.getCause() != null) println("[TextureInput] Caused by: " + e.getCause());
     }
   }
-  return syphonSpoutInput;
-}
-
-void stopTextureReceiving() {
-  if (textureReceiver == null) return;
-  try {
-    if (textureReceiverStopMethod != null) textureReceiverStopMethod.invoke(textureReceiver);
-  } catch (Exception e) {}
-  textureReceiver = null;
-  textureReceivingEnabled = false;
-  syphonSpoutInput = null;
-  syphonSpoutCanvas = null;
-  if (syphonBlitBuffer != null) { syphonBlitBuffer.dispose(); syphonBlitBuffer = null; }
-  println("[TextureInput] Receiver stopped.");
-}
-
-// =====================================================
-//  Output-side Texture Input (second client per GL context)
-// =====================================================
-
-/**
- * Initialize a second Syphon Client / Spout Receiver for the output window.
- * MUST be called from the output window's thread so the client binds to
- * the output GL context.
- */
-void initOutputTextureReceiving(PApplet outputApplet) {
-  stopOutputTextureReceiving();
-
-  String os = System.getProperty("os.name").toLowerCase();
-  try {
-    if (os.contains("mac")) {
-      ClassLoader cl = findLibraryClassLoader("syphon");
-      if (cl == null) { println("[TextureInput-Output] Syphon library not found."); return; }
-      Class<?> cls = Class.forName("codeanticode.syphon.SyphonClient", true, cl);
-      outputTextureReceiver = cls.getConstructor(PApplet.class).newInstance(outputApplet);
-      // Reuse method handles from the controller client (same class)
-      if (textureNewFrameMethod == null) textureNewFrameMethod = cls.getMethod("newFrame");
-      if (textureReceiveMethod == null)  textureReceiveMethod  = cls.getMethod("getGraphics", PGraphics.class);
-      if (textureReceiverStopMethod == null) textureReceiverStopMethod = cls.getMethod("stop");
-      outputTextureReceivingEnabled = true;
-      outputTextureReceivingNeeded = false;
-      println("[TextureInput-Output] Syphon client started (output context)");
-
-    } else if (os.contains("win")) {
-      ClassLoader cl = findLibraryClassLoader("spout");
-      if (cl == null) { println("[TextureInput-Output] Spout library not found."); return; }
-      Class<?> cls = Class.forName("spout.Spout", true, cl);
-      outputTextureReceiver = cls.getConstructor(PApplet.class).newInstance(outputApplet);
-      if (textureReceiveMethod == null) textureReceiveMethod = cls.getMethod("receiveTexture");
-      if (textureReceiverStopMethod == null) textureReceiverStopMethod = cls.getMethod("dispose");
-      outputTextureReceivingEnabled = true;
-      outputTextureReceivingNeeded = false;
-      println("[TextureInput-Output] Spout receiver started (output context)");
-    }
-  } catch (Exception e) {
-    println("[TextureInput-Output] Init failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-    if (e.getCause() != null) println("[TextureInput-Output] Caused by: " + e.getCause());
-  }
-}
-
-/**
- * Call every frame from OutputWindow.draw() to grab the latest input texture.
- */
-PImage updateOutputTextureReceiving(PApplet outputApplet) {
-  if (!outputTextureReceivingEnabled || outputTextureReceiver == null) return outputSyphonSpoutInput;
-  try {
-    String os = System.getProperty("os.name").toLowerCase();
-    if (os.contains("mac")) {
-      boolean hasNew = (Boolean) textureNewFrameMethod.invoke(outputTextureReceiver);
-      if (hasNew) {
-        outputSyphonSpoutCanvas = (PGraphics) textureReceiveMethod.invoke(outputTextureReceiver, new Object[]{outputSyphonSpoutCanvas});
-        if (outputSyphonSpoutCanvas != null) {
-          // Blit onto a regular GL_TEXTURE_2D PGraphics for the output context
-          if (outputSyphonBlitBuffer == null || outputSyphonBlitBuffer.width != outputSyphonSpoutCanvas.width || outputSyphonBlitBuffer.height != outputSyphonSpoutCanvas.height) {
-            if (outputSyphonBlitBuffer != null) outputSyphonBlitBuffer.dispose();
-            outputSyphonBlitBuffer = outputApplet.createGraphics(outputSyphonSpoutCanvas.width, outputSyphonSpoutCanvas.height, P3D);
-          }
-          outputSyphonBlitBuffer.beginDraw();
-          outputSyphonBlitBuffer.background(0);
-          outputSyphonBlitBuffer.image(outputSyphonSpoutCanvas, 0, 0);
-          outputSyphonBlitBuffer.endDraw();
-          outputSyphonSpoutInput = outputSyphonBlitBuffer;
-        }
-      }
-    } else if (os.contains("win")) {
-      textureReceiveMethod.invoke(outputTextureReceiver);
-      try {
-        java.lang.reflect.Method ri = outputTextureReceiver.getClass().getMethod("receiveImage");
-        PImage result = (PImage) ri.invoke(outputTextureReceiver);
-        if (result != null && result.width > 0) outputSyphonSpoutInput = result;
-      } catch (Exception e2) {}
-    }
-  } catch (Exception e) {
-    println("[TextureInput-Output] Update error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-  }
-  return outputSyphonSpoutInput;
-}
-
-void stopOutputTextureReceiving() {
-  if (outputTextureReceiver == null) return;
-  try {
-    if (textureReceiverStopMethod != null) textureReceiverStopMethod.invoke(outputTextureReceiver);
-  } catch (Exception e) {}
-  outputTextureReceiver = null;
-  outputTextureReceivingEnabled = false;
-  outputSyphonSpoutInput = null;
-  outputSyphonSpoutCanvas = null;
-  if (outputSyphonBlitBuffer != null) { outputSyphonBlitBuffer.dispose(); outputSyphonBlitBuffer = null; }
-  println("[TextureInput-Output] Receiver stopped.");
 }
