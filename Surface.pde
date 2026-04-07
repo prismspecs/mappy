@@ -214,7 +214,7 @@ class Surface {
   void updateVideoBridge() {
     // 1. Process thread-safe loading on the main animation thread
     if (!pendingMediaPath.equals("")) {
-      performLoadMedia(projection_app.this, pendingMediaPath);
+      performLoadMedia(mappy.this, pendingMediaPath);
       pendingMediaPath = "";
       delay(50);
     }

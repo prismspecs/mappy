@@ -28,7 +28,7 @@ void performUndo() {
     selectedSurface = null;
     // Restore from snapshot
     for (int i = 0; i < snapshot.size(); i++) {
-      surfaces.add(new Surface(projection_app.this, snapshot.getJSONObject(i)));
+      surfaces.add(new Surface(mappy.this, snapshot.getJSONObject(i)));
     }
   }
 }
